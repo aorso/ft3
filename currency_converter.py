@@ -398,6 +398,7 @@ class CurrencyConverter:
         """
         Trouve le taux de change le plus proche pour une paire et une date.
         Gère automatiquement les paires inversées.
+        Si target_date est None ou future, utilise la dernière date disponible.
         Retourne toujours le taux dans le sens demandé (ex: si on demande EUR_USD, 
         retourne toujours combien d'USD pour 1 EUR).
         
@@ -405,8 +406,8 @@ class CurrencyConverter:
         -----------
         pair : str
             Paire de devises (ex: "EUR_USD" signifie 1 EUR = X USD)
-        target_date : date
-            Date cible
+        target_date : date ou None
+            Date cible. Si None ou future, utilise la dernière date disponible.
             
         Returns:
         --------
@@ -417,6 +418,22 @@ class CurrencyConverter:
             return None
         
         pair = self._normalize_pair(pair)
+        
+        # Filtrer les dates valides
+        df_filtered = self.rates_df[self.rates_df['DATE'].notna()].copy()
+        
+        if df_filtered.empty:
+            return None
+        
+        # Si target_date est None ou future, utiliser la dernière date disponible
+        today = date.today()
+        if target_date is None or target_date > today:
+            # Prendre la date la plus récente disponible (<= aujourd'hui)
+            df_filtered = df_filtered[df_filtered['DATE'] <= today]
+            if df_filtered.empty:
+                return None
+            # Utiliser la date la plus récente
+            target_date = df_filtered['DATE'].max()
         
         # Chercher d'abord la paire directe
         if pair in self.rates_df.columns:
@@ -522,9 +539,10 @@ class CurrencyConverter:
         
         return None
     
-    def convert(self, amount, from_currency, to_currency, target_date):
+    def convert(self, amount, from_currency, to_currency, target_date=None):
         """
         Convertit un montant d'une devise à une autre pour une date donnée.
+        Si target_date est None ou future, utilise le dernier taux disponible.
         
         Parameters:
         -----------
@@ -534,8 +552,9 @@ class CurrencyConverter:
             Devise source (ex: "NOK")
         to_currency : str
             Devise cible (ex: "USD")
-        target_date : date ou str
-            Date du taux de change (format YYYY-MM-DD ou YYYYMMDD)
+        target_date : date, str ou None, optional
+            Date du taux de change (format YYYY-MM-DD ou YYYYMMDD).
+            Si None ou future, utilise le dernier taux disponible.
             
         Returns:
         --------
@@ -543,7 +562,9 @@ class CurrencyConverter:
             Montant converti, ou None si le taux n'est pas disponible
         """
         # Normaliser la date
-        if isinstance(target_date, str):
+        if target_date is None:
+            target_date = None  # Sera géré par _find_closest_rate
+        elif isinstance(target_date, str):
             target_date = pd.to_datetime(target_date).date()
         elif isinstance(target_date, datetime):
             target_date = target_date.date()
@@ -551,6 +572,12 @@ class CurrencyConverter:
         # Si même devise
         if from_currency.upper() == to_currency.upper():
             return amount
+        
+        # Déterminer la date effective à utiliser pour l'import si nécessaire
+        # Si target_date est None ou future, on essaie d'importer les dernières données disponibles
+        import_date = target_date
+        if target_date is None or target_date > date.today():
+            import_date = date.today()
         
         # Essayer d'abord de récupérer le taux depuis les données en mémoire
         rate = self._get_rate_via_eur(from_currency, to_currency, target_date)
@@ -564,14 +591,17 @@ class CurrencyConverter:
             if to_currency.upper() != self.devise_pivot:
                 pairs_needed.append(f"{self.devise_pivot}_{to_currency.upper()}")
             
-            # Importer les taux manquants
-            self.import_rates(pairs_needed, target_date=target_date)
+            # Importer les taux manquants (utiliser import_date pour l'import)
+            self.import_rates(pairs_needed, target_date=import_date)
             
             # Réessayer d'obtenir le taux
             rate = self._get_rate_via_eur(from_currency, to_currency, target_date)
         
         if rate is None:
-            print(f"⚠ Aucun taux de change trouvé pour {from_currency} -> {to_currency} à la date {target_date}")
+            if target_date is None:
+                print(f"⚠ Aucun taux de change trouvé pour {from_currency} -> {to_currency} (aucune date disponible)")
+            else:
+                print(f"⚠ Aucun taux de change trouvé pour {from_currency} -> {to_currency} à la date {target_date}")
             return None
         
         return amount * rate
